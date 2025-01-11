@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -17,6 +17,7 @@
 #include "cam_mem_mgr.h"
 #include "cam_cpas_api.h"
 #include "cam_compat.h"
+#include "cam_subdev.h"
 
 #define SCM_SVC_CAMERASS 0x18
 #define SECURE_SYSCALL_ID 0x6
@@ -694,9 +695,21 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 		return rc;
 	}
 
-	cmd_desc = (struct cam_cmd_buf_desc *)
-		((uint32_t *)&csl_packet->payload +
-		csl_packet->cmd_buf_offset / 4);
+	if (csl_packet->num_cmd_buf)
+		cmd_desc = (struct cam_cmd_buf_desc *)
+			((uint32_t *)&csl_packet->payload +
+			csl_packet->cmd_buf_offset / 4);
+	else {
+		CAM_ERR(CAM_CSIPHY, "num_cmd_buffers = %d", csl_packet->num_cmd_buf);
+		rc = -EINVAL;
+		return rc;
+	}
+
+	rc = cam_packet_util_validate_cmd_desc(cmd_desc);
+	if (rc) {
+		CAM_ERR(CAM_CSIPHY, "Invalid cmd desc ret: %d", rc);
+		return rc;
+	}
 
 	rc = cam_mem_get_cpu_buf(cmd_desc->mem_handle,
 		&generic_ptr, &len);
@@ -721,6 +734,7 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 	index = cam_csiphy_get_instance_offset(csiphy_dev, cfg_dev->dev_handle);
 	if (index < 0 || index  >= csiphy_dev->session_max_device_support) {
 		CAM_ERR(CAM_CSIPHY, "index in invalid: %d", index);
+		cam_mem_put_cpu_buf(cmd_desc->mem_handle);
 		return -EINVAL;
 	}
 
@@ -730,6 +744,7 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 		CAM_ERR(CAM_CSIPHY,
 			"Wrong configuration lane_cnt: %u",
 			cam_cmd_csiphy_info->lane_cnt);
+		cam_mem_put_cpu_buf(cmd_desc->mem_handle);
 		return rc;
 	}
 
@@ -740,6 +755,7 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 			CAM_ERR(CAM_CSIPHY,
 				"Wrong Datarate Configuration: %llu",
 				cam_cmd_csiphy_info->data_rate);
+			cam_mem_put_cpu_buf(cmd_desc->mem_handle);
 			return rc;
 		}
 	}
@@ -758,6 +774,7 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 			"Cannot support %s combo mode with differnt preamble settings",
 			(csiphy_dev->csiphy_info[index].csiphy_3phase ?
 			"CPHY" : "DPHY"));
+		cam_mem_put_cpu_buf(cmd_desc->mem_handle);
 		return -EINVAL;
 	}
 
@@ -820,11 +837,14 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 		csiphy_dev->csiphy_info[index].settle_time,
 		csiphy_dev->csiphy_info[index].data_rate);
 
+	cam_mem_put_cpu_buf(cmd_desc->mem_handle);
+	cam_mem_put_cpu_buf(cfg_dev->packet_handle);
 	return rc;
 
 reset_settings:
 	cam_csiphy_reset_phyconfig_param(csiphy_dev, index);
-
+	cam_mem_put_cpu_buf(cfg_dev->packet_handle);
+	cam_mem_put_cpu_buf(cmd_desc->mem_handle);
 	return rc;
 }
 
@@ -1918,7 +1938,6 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 	uint32_t      cphy_trio_status;
 	void __iomem *csiphybase;
 	int32_t              rc = 0;
-	uint32_t             i;
 
 	if (!csiphy_dev || !cmd) {
 		CAM_ERR(CAM_CSIPHY, "Invalid input args");
@@ -2289,8 +2308,9 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 	}
 	case CAM_START_DEV: {
 		struct cam_start_stop_dev_cmd config;
-		int32_t offset;
+		int32_t i, offset;
 		int clk_vote_level = -1;
+		unsigned long clk_rate = 0;
 
 		CAM_DBG(CAM_CSIPHY, "START_DEV Called");
 		rc = copy_from_user(&config, (void __user *)cmd->handle,
@@ -2330,6 +2350,21 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 					"Failed to set the clk_rate level: %d",
 					clk_vote_level);
 				rc = 0;
+			}
+
+			for (i = 0; i < csiphy_dev->soc_info.num_clk; i++) {
+				if (i == csiphy_dev->soc_info.src_clk_idx) {
+					CAM_DBG(CAM_CSIPHY, "Skipping call back for src clk %s",
+						csiphy_dev->soc_info.clk_name[i]);
+					continue;
+				}
+				clk_rate = cam_soc_util_get_clk_rate_applied(
+					&csiphy_dev->soc_info, i, false, clk_vote_level);
+				if (clk_rate > 0) {
+					cam_subdev_notify_message(CAM_TFE_DEVICE_TYPE,
+						CAM_SUBDEV_MESSAGE_CLOCK_UPDATE,
+						(void *)(&clk_rate));
+				}
 			}
 
 			if (csiphy_dev->csiphy_info[offset].secure_mode == 1) {
