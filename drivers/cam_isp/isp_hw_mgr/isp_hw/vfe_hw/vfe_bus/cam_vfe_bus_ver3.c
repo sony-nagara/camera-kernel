@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 
@@ -232,6 +233,9 @@ static int cam_vfe_bus_ver3_subscribe_init_irq(
 static int cam_vfe_bus_ver3_process_cmd(
 	struct cam_isp_resource_node *priv,
 	uint32_t cmd_type, void *cmd_args, uint32_t arg_size);
+
+static int cam_vfe_bus_ver3_config_ubwc_regs(
+	struct cam_vfe_bus_ver3_wm_resource_data *wm_data);
 
 static int cam_vfe_bus_ver3_get_evt_payload(
 	struct cam_vfe_bus_ver3_common_data  *common_data,
@@ -672,7 +676,7 @@ static void cam_vfe_bus_ver3_print_constraint_errors(
 {
 	uint32_t i;
 
-	CAM_INFO_RATE_LIMIT(CAM_ISP, "Constraint violation bitflags: 0x%X",
+	CAM_INFO(CAM_ISP, "Constraint violation bitflags: 0x%X",
 		constraint_errors);
 
 	for (i = 0; i < bus_priv->num_cons_err; i++) {
@@ -1421,6 +1425,12 @@ static int cam_vfe_bus_ver3_start_wm(struct cam_isp_resource_node *wm_res)
 				rsrc_data->index, rsrc_data->en_ubwc);
 			return -EINVAL;
 		}
+
+		if (rsrc_data->ubwc_updated) {
+			cam_vfe_bus_ver3_config_ubwc_regs(rsrc_data);
+			rsrc_data->ubwc_updated = false;
+		}
+
 		val = cam_io_r_mb(common_data->mem_base + ubwc_regs->mode_cfg);
 		val |= 0x1;
 		if (disable_ubwc_comp) {
@@ -2911,10 +2921,10 @@ static int cam_vfe_bus_ver3_err_irq_top_half(uint32_t evt_id,
 		th_payload->handler_priv;
 	struct cam_vfe_bus_irq_evt_payload *evt_payload;
 
-	CAM_ERR_RATE_LIMIT(CAM_ISP, "VFE:%d BUS Err IRQ",
+	CAM_ERR(CAM_ISP, "VFE:%d BUS Err IRQ",
 		bus_priv->common_data.core_index);
 	for (i = 0; i < th_payload->num_registers; i++) {
-		CAM_ERR_RATE_LIMIT(CAM_ISP, "VFE:%d BUS IRQ status_%d: 0x%X",
+		CAM_ERR(CAM_ISP, "VFE:%d BUS IRQ status_%d: 0x%X",
 		bus_priv->common_data.core_index, i,
 			th_payload->evt_status_arr[i]);
 	}

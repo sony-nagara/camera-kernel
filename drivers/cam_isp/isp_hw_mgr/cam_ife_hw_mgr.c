@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2022, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/slab.h>
@@ -5950,10 +5951,15 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 				CAM_ERR(CAM_ISP,
 					"config done completion timeout for req_id=%llu ctx_index %d",
 					cfg->request_id, ctx->ctx_index);
-				if (!cam_cdm_detect_hang_error(ctx->cdm_handle))
-					CAM_ERR(CAM_ISP, "CDM Workqueue delayed");
-
-				rc = -ETIMEDOUT;
+				rc = cam_cdm_detect_hang_error(ctx->cdm_handle);
+				if (rc < 0) {
+					cam_cdm_dump_debug_registers(
+						ctx->cdm_handle);
+					rc = -ETIMEDOUT;
+				} else {
+					CAM_DBG(CAM_ISP,
+						"Wq delayed but IRQ CDM done");
+				}
 			} else {
 				CAM_DBG(CAM_ISP,
 					"config done Success for req_id=%llu ctx_index %d",
@@ -12042,31 +12048,63 @@ static int cam_ife_hw_mgr_handle_csid_error(
 		error_event_data.recovery_enabled = true;
 /* sony extension end */
 
-	if ((err_type & CAM_ISP_HW_ERROR_CSID_FATAL) &&
+	if ((err_type & (CAM_ISP_HW_ERROR_CSID_LANE_FIFO_OVERFLOW |
+		CAM_ISP_HW_ERROR_CSID_PKT_HDR_CORRUPTED |
+		CAM_ISP_HW_ERROR_CSID_MISSING_PKT_HDR_DATA |
+		CAM_ISP_HW_ERROR_CSID_SENSOR_SWITCH_ERROR |
+		CAM_ISP_HW_ERROR_CSID_FATAL |
+		CAM_ISP_HW_ERROR_CSID_UNBOUNDED_FRAME |
+		CAM_ISP_HW_ERROR_CSID_MISSING_EOT |
+		CAM_ISP_HW_ERROR_CSID_PKT_PAYLOAD_CORRUPTED)) &&
 		g_ife_hw_mgr.debug_cfg.enable_csid_recovery) {
 
 		error_event_data.error_type = CAM_ISP_HW_ERROR_CSID_FATAL;
-		error_event_data.error_code = CAM_REQ_MGR_CSID_FATAL_ERROR;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_SENSOR_SWITCH_ERROR)
+			error_event_data.error_code |=
+				CAM_REQ_MGR_CSID_ERR_ON_SENSOR_SWITCHING;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_LANE_FIFO_OVERFLOW)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_LANE_FIFO_OVERFLOW_ERROR;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_PKT_HDR_CORRUPTED)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_RX_PKT_HDR_CORRUPTION;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_MISSING_PKT_HDR_DATA)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_MISSING_PKT_HDR_DATA;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_FATAL)
+			error_event_data.error_code |= CAM_REQ_MGR_ISP_UNREPORTED_ERROR;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_UNBOUNDED_FRAME)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_UNBOUNDED_FRAME;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_MISSING_EOT)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_MISSING_EOT;
+
+		if (err_type & CAM_ISP_HW_ERROR_CSID_PKT_PAYLOAD_CORRUPTED)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_RX_PKT_PAYLOAD_CORRUPTION;
+
 		rc = cam_ife_hw_mgr_find_affected_ctx(&error_event_data,
 			event_info->hw_idx, &recovery_data);
 		goto end;
 	}
 
-	if (err_type & (CAM_ISP_HW_ERROR_CSID_FIFO_OVERFLOW |
+	if (err_type & (CAM_ISP_HW_ERROR_CSID_OUTPUT_FIFO_OVERFLOW |
 		CAM_ISP_HW_ERROR_RECOVERY_OVERFLOW |
 		CAM_ISP_HW_ERROR_CSID_FRAME_SIZE)) {
 
 		cam_ife_hw_mgr_notify_overflow(event_info, ctx);
 		error_event_data.error_type = CAM_ISP_HW_ERROR_OVERFLOW;
-		if (err_type & CAM_ISP_HW_ERROR_CSID_FIFO_OVERFLOW)
-			error_event_data.error_code |=
-				CAM_REQ_MGR_CSID_FIFO_OVERFLOW_ERROR;
+		if (err_type & CAM_ISP_HW_ERROR_CSID_OUTPUT_FIFO_OVERFLOW)
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_FIFO_OVERFLOW_ERROR;
+
 		if (err_type & CAM_ISP_HW_ERROR_RECOVERY_OVERFLOW)
-			error_event_data.error_code |=
-				CAM_REQ_MGR_CSID_RECOVERY_OVERFLOW_ERROR;
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_RECOVERY_OVERFLOW_ERROR;
+
 		if (err_type & CAM_ISP_HW_ERROR_CSID_FRAME_SIZE)
-			error_event_data.error_code |=
-				CAM_REQ_MGR_CSID_PIXEL_COUNT_MISMATCH;
+			error_event_data.error_code |= CAM_REQ_MGR_CSID_PIXEL_COUNT_MISMATCH;
+
 		rc = cam_ife_hw_mgr_find_affected_ctx(&error_event_data,
 			event_info->hw_idx, &recovery_data);
 	}
